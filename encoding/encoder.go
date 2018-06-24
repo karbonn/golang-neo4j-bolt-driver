@@ -1,14 +1,14 @@
 package encoding
 
 import (
+	"bytes"
 	"encoding/binary"
 	"io"
 	"math"
 
-	"bytes"
-
 	"github.com/johnnadratowski/golang-neo4j-bolt-driver/errors"
 	"github.com/johnnadratowski/golang-neo4j-bolt-driver/structures"
+	"reflect"
 )
 
 const (
@@ -166,58 +166,59 @@ func (e Encoder) Encode(iVal interface{}) error {
 func (e Encoder) encode(iVal interface{}) error {
 
 	var err error
-	switch val := iVal.(type) {
-	case nil:
-		err = e.encodeNil()
-	case bool:
-		err = e.encodeBool(val)
-	case int:
-		err = e.encodeInt(int64(val))
-	case int8:
-		err = e.encodeInt(int64(val))
-	case int16:
-		err = e.encodeInt(int64(val))
-	case int32:
-		err = e.encodeInt(int64(val))
-	case int64:
-		err = e.encodeInt(val)
-	case uint:
-		err = e.encodeInt(int64(val))
-	case uint8:
-		err = e.encodeInt(int64(val))
-	case uint16:
-		err = e.encodeInt(int64(val))
-	case uint32:
-		err = e.encodeInt(int64(val))
-	case uint64:
-		if val > math.MaxInt64 {
-			return errors.New("Integer too big: %d. Max integer supported: %d", val, int64(math.MaxInt64))
-		}
-		err = e.encodeInt(int64(val))
-	case float32:
-		err = e.encodeFloat(float64(val))
-	case float64:
-		err = e.encodeFloat(val)
-	case string:
-		err = e.encodeString(val)
-	case []interface{}:
-		err = e.encodeSlice(val)
-	case map[string]interface{}:
-		err = e.encodeMap(val)
-	case structures.Structure:
-		err = e.encodeStructure(val)
-	default:
-		return errors.New("Unrecognized type when encoding data for Bolt transport: %T %+v", val, val)
+	if iVal == nil {
+		return e.encodeNil()
 	}
+	rv := reflect.ValueOf(iVal)
+	switch rv.Kind() {
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+		err = e.encodeInt(int64(rv.Int()))
+	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
+		err = e.encodeInt(int64(rv.Uint()))
+	case reflect.Float32, reflect.Float64:
+		err = e.encodeFloat(rv.Float())
+	case reflect.Bool:
+		err = e.encodeBool(rv.Bool())
+	case reflect.String:
+		err = e.encodeString(rv.String())
+	case reflect.Slice:
+		ret := make([]interface{}, rv.Len())
+		for i := 0; i < rv.Len(); i++ {
+			ret[i] = rv.Index(i).Interface()
+		}
+		err = e.encodeSlice(ret)
 
+	case reflect.Map:
+
+		if rv.Type().Key().Kind() == reflect.String {
+			iv := rv.Interface()
+			val, ok := iv.(map[string]interface{})
+			if ok {
+				err = e.encodeMap(val)
+			}
+		} else {
+			err = errors.New("Unsupported kind of map: %T, %+v", rv, rv)
+		}
+	case reflect.Struct:
+		val, ok := iVal.(structures.Structure)
+		if ok {
+			err = e.encodeStructure(val)
+		} else {
+			err = errors.New("Unsupported Struct: %T, %+v", rv, rv)
+		}
+	default:
+		return errors.New("Unrecognized type when encoding data for Bolt transport: %T %+v", rv, rv)
+	}
 	return err
 }
 
+// encodeNil encodes a nil object to the stream
 func (e Encoder) encodeNil() error {
 	_, err := e.Write([]byte{NilMarker})
 	return err
 }
 
+// encodeBool encodes a nil object to the stream
 func (e Encoder) encodeBool(val bool) error {
 	var err error
 	if val {
@@ -228,6 +229,7 @@ func (e Encoder) encodeBool(val bool) error {
 	return err
 }
 
+// encodeInt encodes a nil object to the stream
 func (e Encoder) encodeInt(val int64) error {
 	var err error
 	switch {
@@ -285,6 +287,7 @@ func (e Encoder) encodeInt(val int64) error {
 	return err
 }
 
+// encodeFloat encodes a nil object to the stream
 func (e Encoder) encodeFloat(val float64) error {
 	if _, err := e.Write([]byte{FloatMarker}); err != nil {
 		return err
@@ -298,6 +301,7 @@ func (e Encoder) encodeFloat(val float64) error {
 	return err
 }
 
+// encodeString encodes a nil object to the stream
 func (e Encoder) encodeString(val string) error {
 	var err error
 	bytes := []byte(val)
@@ -325,7 +329,7 @@ func (e Encoder) encodeString(val string) error {
 			return err
 		}
 		_, err = e.Write(bytes)
-	case length > math.MaxUint16 && int64(length) <= math.MaxUint32:
+	case length > math.MaxUint16 && length <= math.MaxUint32:
 		if _, err = e.Write([]byte{String32Marker}); err != nil {
 			return err
 		}
@@ -339,6 +343,7 @@ func (e Encoder) encodeString(val string) error {
 	return err
 }
 
+// encodeSlice encodes a nil object to the stream
 func (e Encoder) encodeSlice(val []interface{}) error {
 	length := len(val)
 	switch {
@@ -360,7 +365,7 @@ func (e Encoder) encodeSlice(val []interface{}) error {
 		if err := binary.Write(e, binary.BigEndian, int16(length)); err != nil {
 			return err
 		}
-	case length >= math.MaxUint16 && int64(length) <= math.MaxUint32:
+	case length >= math.MaxUint16 && length <= math.MaxUint32:
 		if _, err := e.Write([]byte{Slice32Marker}); err != nil {
 			return err
 		}
@@ -381,6 +386,7 @@ func (e Encoder) encodeSlice(val []interface{}) error {
 	return nil
 }
 
+// encodeMap encodes a nil object to the stream
 func (e Encoder) encodeMap(val map[string]interface{}) error {
 	length := len(val)
 	switch {
@@ -402,7 +408,7 @@ func (e Encoder) encodeMap(val map[string]interface{}) error {
 		if err := binary.Write(e, binary.BigEndian, int16(length)); err != nil {
 			return err
 		}
-	case length >= math.MaxUint16 && int64(length) <= math.MaxUint32:
+	case length >= math.MaxUint16 && length <= math.MaxUint32:
 		if _, err := e.Write([]byte{Map32Marker}); err != nil {
 			return err
 		}
@@ -426,6 +432,7 @@ func (e Encoder) encodeMap(val map[string]interface{}) error {
 	return nil
 }
 
+// encodeMessageStructure encodes a nil object to the stream
 func (e Encoder) encodeStructure(val structures.Structure) error {
 
 	fields := val.AllFields()
